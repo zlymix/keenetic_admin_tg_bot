@@ -1,0 +1,6 @@
+.idea/
+.git/
+keenetic_bot
+bot
+*.tmp
+data/favorites.json
