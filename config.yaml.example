@@ -14,3 +14,4 @@ router:
 
 storage:
   favorites_file: "data/favorites.json"
+  history_file: "data/history.json"

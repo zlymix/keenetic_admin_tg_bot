@@ -7,7 +7,7 @@ import (
 )
 
 func TestClient_LiveRouter(t *testing.T) {
-	client := NewClient("http://192.168.1.1", "admin", "tmpPASS123")
+	client := NewClient("http://192.168.1.1", "admin", "1mOlOkO3!")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

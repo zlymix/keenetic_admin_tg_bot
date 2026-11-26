@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"keenetic_admin/internal/keenetic"
+	"keenetic_admin/internal/storage"
 
 	tele "gopkg.in/telebot.v4"
 )
@@ -17,24 +19,22 @@ type DeviceMonitor struct {
 	bot      *tele.Bot
 	chatID   int64
 	interval time.Duration
+	history  *storage.HistoryStorage
 
-	mu              sync.RWMutex
-	lastActiveHosts map[string]keenetic.Host
-	knownNames      map[string]string
-	initialized     bool
+	mu          sync.RWMutex
+	initialized bool
 }
 
-func NewDeviceMonitor(client *keenetic.Client, bot *tele.Bot, chatID int64, interval time.Duration) *DeviceMonitor {
+func NewDeviceMonitor(client *keenetic.Client, bot *tele.Bot, chatID int64, interval time.Duration, history *storage.HistoryStorage) *DeviceMonitor {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
 	return &DeviceMonitor{
-		client:          client,
-		bot:             bot,
-		chatID:          chatID,
-		interval:        interval,
-		lastActiveHosts: make(map[string]keenetic.Host),
-		knownNames:      make(map[string]string),
+		client:   client,
+		bot:      bot,
+		chatID:   chatID,
+		interval: interval,
+		history:  history,
 	}
 }
 
@@ -71,79 +71,54 @@ func (m *DeviceMonitor) poll(ctx context.Context) {
 	hotspot, err := m.client.GetHotspot(pollCtx)
 	if err != nil {
 		log.Printf("[MONITOR] Warning: failed to fetch hotspot data: %v", err)
-		// Don't wipe active devices on network error to avoid false disconnect alarms
 		return
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	currentActive := make(map[string]keenetic.Host)
+	now := time.Now()
+	presentMACs := make(map[string]bool, len(hotspot.Host))
+	activeCount := 0
 
 	for _, h := range hotspot.Host {
-		// Update known display names
-		displayName := h.DisplayName()
-		m.knownNames[h.MAC] = displayName
-
+		normMAC := strings.ToLower(strings.TrimSpace(h.MAC))
+		presentMACs[normMAC] = true
 		if h.Active {
-			currentActive[h.MAC] = h
+			activeCount++
+		}
+
+		name := h.DisplayName()
+		var trans string
+		if m.history != nil {
+			trans = m.history.RecordDevice(h.MAC, name, h.Active, now)
+		}
+
+		if m.initialized {
+			if trans == "connected" {
+				m.notify(fmt.Sprintf("🟢 <b>%s</b>", escapeHTML(name)))
+			} else if trans == "disconnected" {
+				m.notify(fmt.Sprintf("🔴 <b>%s</b>", escapeHTML(name)))
+			}
 		}
 	}
 
-	// If this is the very first poll, initialize the baseline without sending messages
+	// Detect any devices that disappeared completely from router hotspot
+	if m.history != nil {
+		missing := m.history.MarkMissingAsOffline(presentMACs, now)
+		if m.initialized {
+			for _, item := range missing {
+				m.notify(fmt.Sprintf("🔴 <b>%s</b>", escapeHTML(item.Name)))
+			}
+		}
+		_ = m.history.Save()
+	}
+
+	// Initial baseline on startup
 	if !m.initialized {
-		m.lastActiveHosts = currentActive
 		m.initialized = true
-		log.Printf("[MONITOR] Initial baseline recorded with %d active devices.", len(currentActive))
-		return
+		log.Printf("[MONITOR] Initial baseline recorded with %d active devices.", activeCount)
 	}
-
-	nowStr := time.Now().Format("15:04:05")
-
-	// Detect new connections
-	for mac, host := range currentActive {
-		if _, existed := m.lastActiveHosts[mac]; !existed {
-			name := host.DisplayName()
-			ip := host.IP
-			if ip == "" {
-				ip = "—"
-			}
-			msg := fmt.Sprintf(
-				"🟢 <b>Устройство подключилось к сети</b>\n\n"+
-					"📱 <b>%s</b>\n"+
-					"🌐 IP: <code>%s</code>\n"+
-					"🏷 MAC: <code>%s</code>\n"+
-					"⏰ Время: %s",
-				escapeHTML(name), ip, mac, nowStr,
-			)
-			m.notify(msg)
-		}
-	}
-
-	// Detect disconnections
-	for mac, host := range m.lastActiveHosts {
-		if _, stillActive := currentActive[mac]; !stillActive {
-			name := host.DisplayName()
-			if savedName, ok := m.knownNames[mac]; ok && savedName != "" {
-				name = savedName
-			}
-			ip := host.IP
-			if ip == "" {
-				ip = "—"
-			}
-			msg := fmt.Sprintf(
-				"🔴 <b>Устройство отключилось от сети</b>\n\n"+
-					"📱 <b>%s</b>\n"+
-					"🌐 IP: <code>%s</code>\n"+
-					"🏷 MAC: <code>%s</code>\n"+
-					"⏰ Время: %s",
-				escapeHTML(name), ip, mac, nowStr,
-			)
-			m.notify(msg)
-		}
-	}
-
-	m.lastActiveHosts = currentActive
 }
 
 func (m *DeviceMonitor) notify(text string) {

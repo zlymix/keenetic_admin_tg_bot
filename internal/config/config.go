@@ -15,6 +15,7 @@ type Config struct {
 
 type StorageConfig struct {
 	FavoritesFile string `yaml:"favorites_file"`
+	HistoryFile   string `yaml:"history_file"`
 }
 
 type TelegramConfig struct {
@@ -52,6 +53,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Storage.FavoritesFile == "" {
 		cfg.Storage.FavoritesFile = "data/favorites.json"
+	}
+	if cfg.Storage.HistoryFile == "" {
+		cfg.Storage.HistoryFile = "data/history.json"
 	}
 
 	return &cfg, nil

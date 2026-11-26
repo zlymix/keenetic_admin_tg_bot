@@ -40,7 +40,9 @@ var (
 	btnRebootPrompt = tele.Btn{Unique: "reboot_prompt"}
 	btnRebootExec   = tele.Btn{Unique: "reboot_confirm"}
 	btnRebootCancel = tele.Btn{Unique: "reboot_cancel"}
-	btnSysRefresh   = tele.Btn{Unique: "sys_refresh"}
+	btnSysRefresh     = tele.Btn{Unique: "sys_refresh"}
+	btnDevText        = tele.Btn{Unique: "dev_text"}
+	btnDevTextRefresh = tele.Btn{Unique: "dev_text_refresh"}
 )
 
 // Bot handles Telegram bot interactions.
@@ -49,14 +51,16 @@ type Bot struct {
 	client    *keenetic.Client
 	monitor   *DeviceMonitor
 	favorites *storage.FavoritesStorage
+	history   *storage.HistoryStorage
 }
 
-func New(teleBot *tele.Bot, client *keenetic.Client, monitor *DeviceMonitor, favorites *storage.FavoritesStorage) *Bot {
+func New(teleBot *tele.Bot, client *keenetic.Client, monitor *DeviceMonitor, favorites *storage.FavoritesStorage, history *storage.HistoryStorage) *Bot {
 	return &Bot{
 		teleBot:   teleBot,
 		client:    client,
 		monitor:   monitor,
 		favorites: favorites,
+		history:   history,
 	}
 }
 
@@ -65,13 +69,15 @@ func (b *Bot) SetupRoutes() {
 	// Main reply keyboard
 	menu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	btnDevices := menu.Text("📱 Устройства")
+	btnActivity := menu.Text("⏱ По времени")
 	btnInternet := menu.Text("🌐 Интернет")
-	btnReboot := menu.Text("🔄 Перезагрузка")
 	btnSystem := menu.Text("ℹ️ Роутер")
+	btnReboot := menu.Text("🔄 Перезагрузка")
 
 	menu.Reply(
-		menu.Row(btnDevices, btnInternet),
-		menu.Row(btnReboot, btnSystem),
+		menu.Row(btnDevices, btnActivity),
+		menu.Row(btnInternet, btnSystem),
+		menu.Row(btnReboot),
 	)
 
 	// Command /start & /menu
@@ -79,9 +85,10 @@ func (b *Bot) SetupRoutes() {
 		welcome := "👋 <b>Панель управления Keenetic</b>\n\n" +
 			"Используйте кнопки меню ниже для управления роутером:\n" +
 			"• <b>📱 Устройства</b> — список подключенных устройств, избранное, отключение интернета, ограничение скорости, Wake-on-LAN\n" +
+			"• <b>⏱ По времени</b> (или <b>/online</b>) — список устройств текстом по времени онлайн / офлайн\n" +
 			"• <b>🌐 Интернет</b> — состояние провайдера и VPN-подключений\n" +
-			"• <b>🔄 Перезагрузка</b> — перезапуск роутера\n" +
-			"• <b>ℹ️ Роутер</b> — системная информация, CPU, память, аптайм"
+			"• <b>ℹ️ Роутер</b> — системная информация, CPU, память, аптайм\n" +
+			"• <b>🔄 Перезагрузка</b> — перезапуск роутера"
 		return c.Send(welcome, sendOptions(menu))
 	})
 
@@ -89,9 +96,27 @@ func (b *Bot) SetupRoutes() {
 		return c.Send("Главное меню:", sendOptions(menu))
 	})
 
+	// Text commands for device activity list
+	b.teleBot.Handle("/devices", func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, false)
+	})
+	b.teleBot.Handle("/online", func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, false)
+	})
+	b.teleBot.Handle("/activity", func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, false)
+	})
+	b.teleBot.Handle("/uptime", func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, false)
+	})
+
 	// Reply Keyboard Buttons
 	b.teleBot.Handle(&btnDevices, func(c tele.Context) error {
 		return b.handleDevicesList(c, true, false)
+	})
+
+	b.teleBot.Handle(&btnActivity, func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, false)
 	})
 
 	b.teleBot.Handle(&btnInternet, func(c tele.Context) error {
@@ -179,6 +204,14 @@ func (b *Bot) SetupRoutes() {
 	// 10. System Info Refresh
 	b.teleBot.Handle(&btnSysRefresh, func(c tele.Context) error {
 		return b.handleSystemInfo(c, true)
+	})
+
+	// 11. Device Activity Text
+	b.teleBot.Handle(&btnDevText, func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, true)
+	})
+	b.teleBot.Handle(&btnDevTextRefresh, func(c tele.Context) error {
+		return b.handleDevicesActivityText(c, true)
 	})
 }
 
@@ -306,10 +339,12 @@ func (b *Bot) handleDevicesList(c tele.Context, onlineOnly bool, isEdit bool) er
 	// Bottom navigation row
 	var bottomButtons []tele.Btn
 	if onlineOnly {
-		bottomButtons = append(bottomButtons, inlineMarkup.Data("⚪ Показать все (вкл. офлайн)", "dev_list", "all"))
+		bottomButtons = append(bottomButtons, inlineMarkup.Data("⚪ Показать все", "dev_list", "all"))
+		bottomButtons = append(bottomButtons, inlineMarkup.Data("⏱ По времени", "dev_text"))
 		bottomButtons = append(bottomButtons, inlineMarkup.Data("🔄 Обновить", "dev_list", "online"))
 	} else {
 		bottomButtons = append(bottomButtons, inlineMarkup.Data("🟢 Только в сети", "dev_list", "online"))
+		bottomButtons = append(bottomButtons, inlineMarkup.Data("⏱ По времени", "dev_text"))
 		bottomButtons = append(bottomButtons, inlineMarkup.Data("🔄 Обновить", "dev_list", "all"))
 	}
 	rows = append(rows, inlineMarkup.Row(bottomButtons...))
@@ -715,4 +750,169 @@ func (b *Bot) handleSystemInfo(c tele.Context, isEdit bool) error {
 		return b.editOrIgnore(c, sb.String(), inlineMarkup, "Информация обновлена")
 	}
 	return c.Send(sb.String(), sendOptions(inlineMarkup))
+}
+
+// formatDuration formats a time.Duration into a concise Russian string (e.g. "< 1 мин.", "5 мин.", "1 ч. 20 мин.", "2 д. 4 ч.").
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return "< 1 мин."
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%d д. %d ч.", days, hours)
+		}
+		return fmt.Sprintf("%d д.", days)
+	}
+	if hours > 0 {
+		if mins > 0 {
+			return fmt.Sprintf("%d ч. %d мин.", hours, mins)
+		}
+		return fmt.Sprintf("%d ч.", hours)
+	}
+	return fmt.Sprintf("%d мин.", mins)
+}
+
+type deviceDurationEntry struct {
+	MAC         string
+	Name        string
+	Active      bool
+	Duration    time.Duration
+	HasDuration bool
+	IsFavorite  bool
+}
+
+// handleDevicesActivityText displays devices in plain text:
+// 1. Online devices sorted by duration online ascending (fewest minutes first, then longer).
+// 2. Offline devices sorted by duration offline ascending (recently went offline first, then longer, then unknown/давно).
+func (b *Bot) handleDevicesActivityText(c tele.Context, isEdit bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+
+	// Refresh current state from router if available
+	hotspot, err := b.client.GetHotspot(ctx)
+	if err == nil && hotspot != nil {
+		presentMACs := make(map[string]bool, len(hotspot.Host))
+		for _, h := range hotspot.Host {
+			normMAC := strings.ToLower(strings.TrimSpace(h.MAC))
+			presentMACs[normMAC] = true
+			if b.history != nil {
+				b.history.RecordDevice(h.MAC, h.DisplayName(), h.Active, now)
+			}
+		}
+		if b.history != nil {
+			b.history.MarkMissingAsOffline(presentMACs, now)
+			_ = b.history.Save()
+		}
+	} else {
+		log.Printf("[BOT] Note: GetHotspot failed (%v), using stored history", err)
+	}
+
+	var allItems map[string]storage.DeviceHistoryItem
+	if b.history != nil {
+		allItems = b.history.GetAll()
+	}
+
+	var onlineItems []deviceDurationEntry
+	var offlineItems []deviceDurationEntry
+
+	for _, item := range allItems {
+		entry := deviceDurationEntry{
+			MAC:        item.MAC,
+			Name:       item.Name,
+			Active:     item.Active,
+			IsFavorite: b.favorites != nil && b.favorites.IsFavorite(item.MAC),
+		}
+		if entry.Name == "" {
+			entry.Name = item.MAC
+		}
+
+		if item.Active {
+			entry.HasDuration = !item.OnlineSince.IsZero()
+			if entry.HasDuration {
+				entry.Duration = now.Sub(item.OnlineSince)
+			}
+			onlineItems = append(onlineItems, entry)
+		} else {
+			entry.HasDuration = !item.OfflineSince.IsZero()
+			if entry.HasDuration {
+				entry.Duration = now.Sub(item.OfflineSince)
+			}
+			offlineItems = append(offlineItems, entry)
+		}
+	}
+
+	// 1. Sort online items: duration online ascending (least time first, then more)
+	sort.Slice(onlineItems, func(i, j int) bool {
+		if onlineItems[i].Duration != onlineItems[j].Duration {
+			return onlineItems[i].Duration < onlineItems[j].Duration
+		}
+		return strings.ToLower(onlineItems[i].Name) < strings.ToLower(onlineItems[j].Name)
+	})
+
+	// 2. Sort offline items: recently offline first (least time first), then longer, then unknown ("давно")
+	sort.Slice(offlineItems, func(i, j int) bool {
+		if offlineItems[i].HasDuration != offlineItems[j].HasDuration {
+			return offlineItems[i].HasDuration // known duration comes before unknown
+		}
+		if offlineItems[i].HasDuration && offlineItems[j].HasDuration {
+			if offlineItems[i].Duration != offlineItems[j].Duration {
+				return offlineItems[i].Duration < offlineItems[j].Duration
+			}
+		}
+		return strings.ToLower(offlineItems[i].Name) < strings.ToLower(offlineItems[j].Name)
+	})
+
+	var sb strings.Builder
+	sb.WriteString("📋 <b>Список устройств по времени активности</b>\n\n")
+
+	sb.WriteString(fmt.Sprintf("🟢 <b>Онлайн (%d):</b>\n", len(onlineItems)))
+	if len(onlineItems) == 0 {
+		sb.WriteString("<i>Нет устройств в сети</i>\n")
+	} else {
+		for i, item := range onlineItems {
+			fav := ""
+			if item.IsFavorite {
+				fav = "⭐ "
+			}
+			durStr := formatDuration(item.Duration)
+			sb.WriteString(fmt.Sprintf("%d. %s<b>%s</b> — %s\n", i+1, fav, escapeHTML(item.Name), durStr))
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("\n🔴 <b>Оффлайн (%d):</b>\n", len(offlineItems)))
+	if len(offlineItems) == 0 {
+		sb.WriteString("<i>Все устройства в сети</i>\n")
+	} else {
+		for i, item := range offlineItems {
+			fav := ""
+			if item.IsFavorite {
+				fav = "⭐ "
+			}
+			durStr := "давно"
+			if item.HasDuration {
+				durStr = formatDuration(item.Duration)
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s<b>%s</b> — %s\n", i+1, fav, escapeHTML(item.Name), durStr))
+		}
+	}
+
+	markup := &tele.ReplyMarkup{}
+	btnRefresh := markup.Data("🔄 Обновить", "dev_text_refresh")
+	btnInteractive := markup.Data("📱 Панель устройств", "dev_list", "online")
+	markup.Inline(markup.Row(btnRefresh, btnInteractive))
+
+	msgText := sb.String()
+	if isEdit {
+		return b.editOrIgnore(c, msgText, markup, "Список обновлен")
+	}
+	return c.Send(msgText, sendOptions(markup))
 }

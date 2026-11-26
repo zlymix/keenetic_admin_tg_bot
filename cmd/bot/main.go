@@ -66,26 +66,33 @@ func main() {
 	// 3. Register Auth Middleware
 	teleBot.Use(bot.AuthMiddleware(cfg.Telegram.AllowedUsers))
 
-	// 4. Initialize & Start Device Connect/Disconnect Monitor
+	// 4. Initialize History Storage
+	historyStore, err := storage.NewHistoryStorage(cfg.Storage.HistoryFile)
+	if err != nil {
+		log.Fatalf("[MAIN] Failed to initialize history storage: %v", err)
+	}
+	log.Printf("[MAIN] History storage initialized from %s", cfg.Storage.HistoryFile)
+
+	// 5. Initialize & Start Device Connect/Disconnect Monitor
 	pollInterval := time.Duration(cfg.Router.PollIntervalSeconds) * time.Second
-	deviceMonitor := bot.NewDeviceMonitor(keeneticClient, teleBot, cfg.Telegram.NotificationChatID, pollInterval)
+	deviceMonitor := bot.NewDeviceMonitor(keeneticClient, teleBot, cfg.Telegram.NotificationChatID, pollInterval, historyStore)
 
 	monitorCtx, stopMonitor := context.WithCancel(context.Background())
 	defer stopMonitor()
 	deviceMonitor.Start(monitorCtx)
 
-	// 5. Initialize Favorites Storage
+	// 6. Initialize Favorites Storage
 	favoritesStore, err := storage.NewFavoritesStorage(cfg.Storage.FavoritesFile)
 	if err != nil {
 		log.Fatalf("[MAIN] Failed to initialize favorites storage: %v", err)
 	}
 	log.Printf("[MAIN] Favorites storage initialized from %s", cfg.Storage.FavoritesFile)
 
-	// 6. Setup Bot Handlers
-	appBot := bot.New(teleBot, keeneticClient, deviceMonitor, favoritesStore)
+	// 7. Setup Bot Handlers
+	appBot := bot.New(teleBot, keeneticClient, deviceMonitor, favoritesStore, historyStore)
 	appBot.SetupRoutes()
 
-	// 7. Graceful Shutdown
+	// 8. Graceful Shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
